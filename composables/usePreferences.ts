@@ -1,4 +1,5 @@
 import { StorageSerializers } from '@vueuse/core';
+
 import { MP_ORIGIN_TIMESTAMP } from '~/config';
 import type { Preferences } from '~/types/preferences';
 
@@ -18,7 +19,7 @@ const defaultOptions: Partial<Preferences> = {
     forceDownloadContent: false,
     metadataOverrideContent: false,
   },
-  accountSyncSeconds: 3,
+  accountSyncSeconds: 8,
   syncDateRange: 'all',
   syncDatePoint: MP_ORIGIN_TIMESTAMP,
 };
