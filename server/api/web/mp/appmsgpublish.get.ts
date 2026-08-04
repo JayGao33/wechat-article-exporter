@@ -1,4 +1,5 @@
 /**
+
  * 获取文章列表接口
  */
 
@@ -50,6 +51,10 @@ export default defineEventHandler(async event => {
     parseJson: true,
   }).catch(e => {
     console.error(e);
+    // 微信限流（200013）原样抛出，让前端做退避重试；其余错误统一降级
+    if (e && typeof e.message === 'string' && e.message.includes('200013')) {
+      throw e;
+    }
     return {
       base_resp: {
         ret: -1,
