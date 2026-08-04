@@ -1,4 +1,5 @@
 <script setup lang="ts">
+
 import type {
   ColDef,
   GetRowIdParams,
@@ -24,7 +25,7 @@ import { IMAGE_PROXY, websiteName } from '~/config';
 import { sharedGridOptions } from '~/config/shared-grid-options';
 import { deleteAccountData } from '~/store/v2';
 import { getArticleCache, hitCache } from '~/store/v2/article';
-import { getAllInfo, getInfoCache, importMpAccounts, type MpAccount } from '~/store/v2/info';
+import { getAllInfo, getInfoCache, importMpAccounts, updateInfoCache, type MpAccount } from '~/store/v2/info';
 import type { AccountManifest } from '~/types/account';
 import type { Preferences } from '~/types/preferences';
 import { exportAccountJsonFile } from '~/utils/exporter';
@@ -66,14 +67,36 @@ function addAccount() {
 }
 async function onSelectAccount(account: MpAccount) {
   addBtnLoading.value = true;
-  await loadAccountArticle(account, false);
-  await refresh();
-  addBtnLoading.value = false;
-  toast.success('公众号添加成功', `已成功添加公众号【${account.nickname}】，并同步了第一页的文章数据`);
-  // 通知 Credentials 面板按钮立即变更为“已添加”
-  accountEventBus.emit('account-added', { fakeid: account.fakeid });
-}
+  try {
+    // 先把公众号写入本地数据库，保证即使文章同步失败，账号也能添加上
+    await updateInfoCache({
+      fakeid: account.fakeid,
+      completed: false,
+      count: 0,
+      articles: 0,
+      nickname: account.nickname,
+      round_head_img: account.round_head_img,
+      total_count: 0,
+    });
 
+    try {
+      await loadAccountArticle(account, false);
+    } catch (e: any) {
+      // 同步文章失败（如微信限流 200013）不阻塞添加，仅提示
+      toast.warning('公众号已添加', `公众号【${account.nickname}】已添加，但同步文章失败：${e.message}`);
+    }
+
+    await refresh();
+    toast.success('公众号添加成功', `已成功添加公众号【${account.nickname}】`);
+    // 通知 Credentials 面板按钮立即变更为“已添加”
+    accountEventBus.emit('account-added', { fakeid: account.fakeid });
+  } catch (e: any) {
+    addBtnLoading.value = false;
+    toast.error('添加失败', e.message || '添加公众号失败，请稍后重试');
+  } finally {
+    addBtnLoading.value = false;
+  }
+}
 // 表示同步过程中是否执行了取消操作
 const isCanceled = ref(false);
 const isDeleting = ref(false);
@@ -187,7 +210,6 @@ async function loadSelectedAccountArticle() {
 }
 
 let globalRowData: MpAccount[] = [];
-
 const columnDefs = ref<ColDef[]>([
   {
     colId: 'fakeid',
