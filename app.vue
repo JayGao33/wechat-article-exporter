@@ -23,6 +23,11 @@ LicenseManager.setLicenseKey(runtimeConfig.public.aggridLicense);
 if (!isChromeBrowser()) {
   alert('为了更好的用户体验，推荐使用 Chrome 浏览器。');
 }
+
+// 请求持久化存储，避免浏览器清理 IndexedDB/localStorage 导致公众号列表丢失
+if (navigator.storage && navigator.storage.persist) {
+  navigator.storage.persist().catch(() => {});
+}
 </script>
 
 <style>
