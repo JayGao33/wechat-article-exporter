@@ -50,11 +50,9 @@ export default defineEventHandler(async event => {
     query: params,
     parseJson: true,
   }).catch(e => {
+    // 注意：限流（200013）已在 proxyMpRequest 中以正常 JSON 返回，不会走到这里；
+    // 这里只兜底网络/解析等异常
     console.error(e);
-    // 微信限流（200013）原样抛出，让前端做退避重试；其余错误统一降级
-    if (e && typeof e.message === 'string' && e.message.includes('200013')) {
-      throw e;
-    }
     return {
       base_resp: {
         ret: -1,
