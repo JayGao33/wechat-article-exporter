@@ -1,10 +1,53 @@
 import dayjs from 'dayjs';
+
 import { H3Event, parseCookies } from 'h3';
 import { v4 as uuidv4 } from 'uuid';
 import { isDev, USER_AGENT } from '~/config';
 import { RequestOptions } from '~/server/types';
 import { cookieStore, getCookieFromStore } from '~/server/utils/CookieStore';
 import { logRequest, logResponse } from '~/server/utils/logger';
+
+/**
+ * 微信接口全局限流控制
+ *
+ * 背景：微信对公众号后台接口有频率限制（200013: freq control），且是针对整个登录账号的。
+ * 一旦短时间内请求过于密集，就会被微信风控限制，导致搜索/登录/拉文章全部失败。
+ *
+ * 这里按 auth-key 做最小请求间隔排队：同一账号的微信请求之间至少间隔 MP_REQUEST_INTERVAL_MS，
+ * 超出间隔的请求会等待，避免突发请求触发微信限流。
+ *
+ * 注意：Cloudflare Workers 单实例内存 Map 即可满足需求；如有多个隔离实例，
+ * 误差可接受，此机制是尽力而为的"减震器"而非严格节流。
+ */
+const MP_REQUEST_INTERVAL_MS = 2500; // 同一账号两次微信请求的最小间隔
+const lastRequestTimeMap = new Map<string, number>(); // authKey -> 上次请求时间戳(ms)
+
+/**
+ * 等待直到允许发起下一次微信请求（按 auth-key 排队）
+ * @param authKey 登录凭证
+ */
+async function waitForMpRequestSlot(authKey: string): Promise<void> {
+  if (!authKey) return;
+
+  const now = Date.now();
+  const lastTime = lastRequestTimeMap.get(authKey) || 0;
+  const elapsed = now - lastTime;
+  const waitMs = Math.max(0, MP_REQUEST_INTERVAL_MS - elapsed);
+
+  if (waitMs > 0) {
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  }
+
+  lastRequestTimeMap.set(authKey, Date.now());
+}
+
+/**
+ * 判断微信响应是否为限流错误
+ * @param body 已解析的 JSON 响应体
+ */
+function isFreqControl(body: any): boolean {
+  return !!body && body.base_resp && body.base_resp.ret === 200013;
+}
 
 /**
  * 代理微信公众号请求
@@ -26,6 +69,10 @@ export async function proxyMpRequest(options: RequestOptions) {
   if (cookie) {
     headers.set('Cookie', cookie);
   }
+
+  // 全局限流：同一账号的微信请求排队，最小间隔 MP_REQUEST_INTERVAL_MS
+  const authKey = getAuthKeyFromRequest(options.event);
+  await waitForMpRequestSlot(authKey);
 
   const requestInit: RequestInit = {
     method: options.method,
@@ -135,11 +182,17 @@ export async function proxyMpRequest(options: RequestOptions) {
     statusText: mpResponse.statusText,
     headers: responseHeaders,
   });
-
   if (!options.parseJson) {
     return finalResponse;
   } else {
-    return finalResponse.json();
+    const json = await finalResponse.json();
+
+    // 检测到微信限流时抛出明确错误，让前端做退避重试
+    if (isFreqControl(json)) {
+      throw new Error('200013:freq control');
+    }
+
+    return json;
   }
 }
 
