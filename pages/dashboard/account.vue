@@ -107,6 +107,44 @@ const syncingRowId = ref<string | null>(null);
 
 const syncTimer = ref<number | null>(null);
 
+// ---- 微信限流（200013）退避重试 ----
+
+const FREQ_CONTROL_RETRIES = 6;
+// 每次重试前等待的秒数（指数式递增）
+const FREQ_CONTROL_DELAYS = [30, 60, 120, 300, 900, 1800];
+
+function isFreqControlError(e: any): boolean {
+  if (!e) return false;
+  const str = JSON.stringify(e.message || '') + '|' + JSON.stringify(e.data || '');
+  return str.includes('200013');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * 获取文章列表，遇微信限流时指数退避重试
+ */
+async function fetchArticleListWithBackoff(account: MpAccount, begin: number) {
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await getArticleList(account, begin);
+    } catch (e: any) {
+      if (!isFreqControlError(e) || attempt >= FREQ_CONTROL_RETRIES) {
+        throw e;
+      }
+      const delaySec = FREQ_CONTROL_DELAYS[attempt];
+      const msg = `被微信限流，${delaySec} 秒后自动重试（第 ${attempt + 1}/${FREQ_CONTROL_RETRIES} 次）`;
+      console.warn('[限流退避]', account.nickname, msg);
+      toast.warning('微信限流', msg);
+      await sleep(delaySec * 1000);
+      attempt++;
+    }
+  }
+}
+
 async function _load(account: MpAccount, begin: number, loadMore: boolean, promise: PromiseInstance) {
   if (isCanceled.value) {
     isCanceled.value = false; // 这里需要将状态复位
@@ -117,7 +155,7 @@ async function _load(account: MpAccount, begin: number, loadMore: boolean, promi
   syncingRowId.value = account.fakeid;
   isSyncing.value = true;
 
-  const [articles, completed] = await getArticleList(account, begin);
+  const [articles, completed] = await fetchArticleListWithBackoff(account, begin);
   if (isCanceled.value) {
     isCanceled.value = false;
     promise.reject(new Error('已取消同步'));
@@ -155,6 +193,8 @@ async function _load(account: MpAccount, begin: number, loadMore: boolean, promi
 
   await updateRow(account.fakeid);
   if (loadMore) {
+    // 翻页间隔至少 5 秒，降低请求频率（配合服务端限流）
+    const syncSeconds = Math.max(5, (preferences.value as unknown as Preferences).accountSyncSeconds || 5);
     syncTimer.value = window.setTimeout(
       () => {
         if (isCanceled.value) {
@@ -165,7 +205,7 @@ async function _load(account: MpAccount, begin: number, loadMore: boolean, promi
         }
         _load(account, begin, true, promise);
       },
-      ((preferences.value as unknown as Preferences).accountSyncSeconds || 5) * 1000
+      syncSeconds * 1000
     );
   } else {
     syncingRowId.value = null;
@@ -199,8 +239,13 @@ async function loadSelectedAccountArticle() {
 
   try {
     const rows = getSelectedRows();
-    for (const account of rows) {
-      await loadAccountArticle(account);
+    for (let i = 0; i < rows.length; i++) {
+      if (isCanceled.value) break;
+      await loadAccountArticle(rows[i]);
+      // 串行同步：每个公众号之间间隔 8 秒，避免短时间内请求过密触发微信限流
+      if (i < rows.length - 1 && !isCanceled.value) {
+        await sleep(8000);
+      }
     }
     const rangeHint = isSyncAll() ? '' : `（同步范围：${getSyncRangeLabel()}）`;
     toast.success('同步完成', `已成功同步 ${rows.length} 个公众号${rangeHint}`);
@@ -575,3 +620,4 @@ const { getActualDateRange } = useSyncDeadline();
     <GlobalSearchAccountDialog ref="searchAccountDialogRef" @select:account="onSelectAccount" />
   </div>
 </template>
+
