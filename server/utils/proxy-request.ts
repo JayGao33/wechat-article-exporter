@@ -1,5 +1,6 @@
 import dayjs from 'dayjs';
 
+
 import { H3Event, parseCookies } from 'h3';
 import { v4 as uuidv4 } from 'uuid';
 import { isDev, USER_AGENT } from '~/config';
@@ -187,11 +188,8 @@ export async function proxyMpRequest(options: RequestOptions) {
   } else {
     const json = await finalResponse.json();
 
-    // 检测到微信限流时抛出明确错误，让前端做退避重试
-    if (isFreqControl(json)) {
-      throw new Error('200013:freq control');
-    }
-
+    // 限流（200013）不抛异常（否则会变成 HTTP 500，丢失限流特征），
+    // 直接返回微信原始 JSON（含 ret=200013），由前端 getArticleList 识别并退避重试
     return json;
   }
 }
